@@ -276,6 +276,113 @@ class LBFGSB(AbstractTrajOptimizer):
         return (params, history) if return_info else params
 
 
+@dataclass(eq=False)
+class ScipyBoundedMinimizeCopy(ScipyMinimize):
+  """`scipy.optimize.minimize` wrapper.
+
+  This wrapper is for minimization subject to box constraints only.
+
+  Attributes:
+    fun: a smooth function of the form `fun(x, *args, **kwargs)`.
+    method: the `method` argument for `scipy.optimize.minimize`.
+    tol: the `tol` argument for `scipy.optimize.minimize`.
+    options: the `options` argument for `scipy.optimize.minimize`.
+    dtype: if not None, cast all NumPy arrays to this dtype. Note that some
+      methods relying on FORTRAN code, such as the `L-BFGS-B` solver for
+      `scipy.optimize.minimize`, require casting to float64.
+    jit: whether to JIT-compile JAX-based values and grad evals.
+    implicit_diff_solve: the linear system solver to use.
+    has_aux: whether function `fun` outputs one (False) or more values (True).
+      When True it will be assumed by default that `fun(...)[0]` is the
+      objective.
+  """
+
+  def _fixed_point_fun(self, sol, bounds, args, kwargs):
+    step = tree_sub(sol, self._grad_fun(sol, *args, **kwargs))
+    return projection.projection_box(step, bounds)
+
+  def optimality_fun(self, sol, bounds, *args, **kwargs):
+    """Optimality function mapping compatible with `@custom_root`."""
+    fp = self._fixed_point_fun(sol, bounds, args, kwargs)
+    return tree_sub(fp, sol)
+
+  def run(self,
+          init_params: Any,
+          bounds: Optional[Any],
+          *args,
+          **kwargs) -> base.OptStep:
+    """Runs the solver.
+
+    Args:
+      init_params: pytree containing the initial parameters.
+      bounds: an optional tuple `(lb, ub)` of pytrees with structure identical
+        to `init_params`, representing box constraints.
+      constraints (Tuple) of (func, lb, ub). For now, these are assumed to be non-linear constraints. 
+                    The lb and ub indicate lower and upper values of the constraint evaluation 
+      *args: additional positional arguments to be passed to `fun`.
+      **kwargs: additional keyword arguments to be passed to `fun`.
+    Returns:
+      (params, info).
+    """
+    # Sets up the "JAX-SciPy" bridge.
+    pytree_topology = pytree_topology_from_example(init_params)
+    onp_to_jnp = make_onp_to_jnp(pytree_topology)
+
+    # wrap the callback so its arguments are of the same kind as fun
+    if self.callback is not None:
+      def scipy_callback(x_onp: onp.ndarray):
+        x_jnp = onp_to_jnp(x_onp)
+        return self.callback(x_jnp)
+    else:
+      scipy_callback = None
+
+    def scipy_fun(x_onp: onp.ndarray) -> Tuple[onp.ndarray, onp.ndarray]:
+      x_jnp = onp_to_jnp(x_onp)
+      value, grads = self._value_and_grad_fun(x_jnp, *args, **kwargs)
+      return onp.asarray(value, self.dtype), jnp_to_onp(grads, self.dtype)
+
+    if bounds is not None:
+      bounds = scipy.optimize.Bounds(lb=jnp_to_onp(bounds[0], self.dtype),
+                                   ub=jnp_to_onp(bounds[1], self.dtype))
+    constraints = [(lambda x: x[0]-x[1], .5, .6),
+                   (lambda x: x[-2]*x[-1], 2.5, 2.6),]
+    scipy_constraints = [scipy.optimize.NonlinearConstraint(constr_i, lb_i, ub_i) for (constr_i, lb_i, ub_i) in constraints]
+
+    res = scipy.optimize.minimize(scipy_fun, jnp_to_onp(init_params, self.dtype),
+                                jac=True,
+                                tol=self.tol,
+                                bounds=bounds,
+                                # constraints=scipy_constraints,
+                                method=self.method,
+                                callback=scipy_callback,
+                                options=self.options)
+
+    params = tree_util.tree_map(jnp.asarray, onp_to_jnp(res.x))
+
+    if hasattr(res, 'hess_inv'):
+      if isinstance(res.hess_inv, scipy.optimize.LbfgsInvHessProduct):
+        hess_inv = LbfgsInvHessProductPyTree(res.hess_inv.sk,
+                                             res.hess_inv.yk)
+      elif isinstance(res.hess_inv, onp.ndarray):
+        hess_inv = jnp.asarray(res.hess_inv)
+    else:
+      hess_inv = None
+
+    try:
+      num_hess_eval = jnp.asarray(res.nhev, base.NUM_EVAL_DTYPE)
+    except AttributeError:
+      num_hess_eval = jnp.array(0, base.NUM_EVAL_DTYPE)
+    info = ScipyMinimizeInfo(fun_val=jnp.asarray(res.fun),
+                             success=res.success,
+                             status=res.status,
+                             iter_num=res.nit,
+                             hess_inv=hess_inv,
+                             num_fun_eval=jnp.asarray(res.nfev, base.NUM_EVAL_DTYPE),
+                             num_jac_eval=jnp.asarray(res.njev, base.NUM_EVAL_DTYPE),
+                             num_hess_eval=num_hess_eval)
+    return base.OptStep(params, info)
+  
+  
 @dataclass
 class SLSQP(AbstractTrajOptimizer):
     """

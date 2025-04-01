@@ -200,8 +200,3 @@ def _check_batch_size(batch_size: Any) -> None:
     if not batch_size == -1 and not batch_size > 0:
         raise ValueError("batch_size must be positive")
 
-
-__all__ = [
-    "fit",
-    "get_batch",
-]

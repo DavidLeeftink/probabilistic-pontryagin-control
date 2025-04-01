@@ -24,12 +24,12 @@ import equinox as eqx
 from beartype.typing import Callable, List, Optional, Union
 from jaxtyping import Float
 from jaxtyping import Array, Float
-from gpdx.control.trajectory_optimizers import AbstractTrajOptimizer, PMPForward, EnsemblePMPForward, EnsemblePMPForwardBackward
-from gpdx.control.cost_functions import QuadraticCost
-from gpdx.systems.abstract import AbstractSystem
-from gpdx.nn.node import EnsembleNeuralODE
-from gpdx.control.abstract_control import AbstractController
-from gpdx.dataset import DiffEqDataset
+from ppc.control.trajectory_optimizers import AbstractTrajOptimizer, PMPForward, EnsemblePMPForward
+from ppc.control.cost_functions import QuadraticCost
+from ppc.systems.abstract import AbstractSystem
+from ppc.nn.node import EnsembleNeuralODE
+from ppc.control.abstract_control import AbstractController
+from ppc.dataset import DiffEqDataset
 import imageio
     
 
@@ -613,7 +613,7 @@ class ensembleDirectMPC(ABC):
             control_iterpolator (Callable) interpolation function of the control signals.
              
     """
-    traj_optimizer:Union[EnsemblePMPForward,EnsemblePMPForwardBackward]
+    traj_optimizer:Union[EnsemblePMPForward]
     real_system:AbstractSystem
     internal_system:EnsembleNeuralODE
     state_cost:QuadraticCost=None
